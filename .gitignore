@@ -133,5 +133,7 @@ dmypy.json
 .fna
 .fnai
 .fasta
+.gff
+.csv
 raw-data/
 data/
