@@ -250,7 +250,6 @@ def _perform_catalysis(args: Namespace) -> None:
                 'method': _method
             }
         }
-        total = 0
 
         for chr in SeqIO.parse(args.input_path, 'fasta'):
             # ignore the mitochrondrial genome, only do nuclear genome
@@ -282,7 +281,6 @@ def _perform_catalysis(args: Namespace) -> None:
                     restriction_enzymes_arg=restriction_enzymes)
             
             fragments_per_chrom[chr.id] = restriction_fragments_positions
-            total += len(*restriction_fragments_positions.values())
         pickle.dump(fragments_per_chrom, open(output_dir.joinpath(f'{combination_str}.pos'), 'wb'))
 
     return None
