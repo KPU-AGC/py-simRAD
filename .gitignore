@@ -127,3 +127,13 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# sequence/output files
+.restriction
+.fna
+.fnai
+.fasta
+.gff
+.csv
+raw-data/
+data/
