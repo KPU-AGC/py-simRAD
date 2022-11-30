@@ -4,8 +4,10 @@ __description__ =\
 Purpose: Perform double restriction digest on a given genome.
 """
 __author__ = "Erick Samera; Michael Ke"
-__version__ = "4.0.0"
+__version__ = "4.1.0"
 __comments__ = "stable; multi-processing"
+# TODO: add support for checking whether the position file already exists.
+# TODO:
 # --------------------------------------------------
 from argparse import (
     Namespace,
@@ -17,9 +19,8 @@ from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Restriction import Restriction
 from itertools import combinations
-import pandas as pd
-import pickle
 from multiprocessing import Pool
+import pickle
 # --------------------------------------------------
 def get_args() -> Namespace:
     """ Get command-line arguments """
@@ -50,9 +51,9 @@ def get_args() -> Namespace:
         help='enzymes to generate combinations for double-restriction, ex: "EcoRI;BamHI" (default: "SbfI;EcoRI;SphI;PstI;MspI;MseI")')
     group_rst_enz_parser.add_argument(
         '--as_is',
-        dest='no_combination',
+        dest='as_is',
         action='store_true',
-        help='do not generate combinations for double-restriction, use enzyme list as is')
+        help='use enzymes list as is (double-restrictions allowed); ex: "EcoRI;BamHI;EcoRI-BamHI" (default: False)')
     group_rst_enz_parser.add_argument(
         '--fast',
         dest='use_fast',
@@ -142,7 +143,7 @@ def get_args() -> Namespace:
     # parser errors and processing
     # --------------------------------------------------
     if args.options=='catalyze':
-        if not args.no_combination:
+        if not args.as_is:
             invalid_enzymes: list = [enzyme for enzyme in args.enzymes.split(';') if enzyme not in Restriction.AllEnzymes.elements()]
         else:
             flattened_enzymes: list = sum([enzyme.split('-') for enzyme in args.enzymes.split(';')], [])
@@ -151,61 +152,6 @@ def get_args() -> Namespace:
         if invalid_enzymes: parser.error(f"Couldn't process the following enzymes: {' '.join(invalid_enzymes)}")
     return args
 # --------------------------------------------------
-def _combination_io(args: Namespace, combination: tuple, output_dir: Path) -> None:
-    """
-    
-    """
-
-    _method = 'fast' if args.use_fast else 'comprehensive'
-
-    _metadata = {
-        'metadata': {
-            'version': __version__,
-            'method': _method,
-        }
-    }
-
-
-
-    combination_str = '-'.join(list(combination))
-
-    fragments_per_chrom: dict = {}
-    fragments_per_chrom.update(_metadata)
-
-    for chr in SeqIO.parse(args.input_path, 'fasta'):
-        # ignore the mitochrondrial genome, only do nuclear genome
-        if 'mitochondrion' in chr.description: continue
-
-        # generate a list of fragments per chromosome
-        #chr_str: str = f'chr{chr.description[-1]}'
-        fragments_per_chrom[chr.id] = {
-            'fragments_list': []
-            }
-        
-        restriction_fragments_positions: dict = {}
-        if args.use_fast:
-            # get all unique slice positions
-            restriction_batch = Restriction.RestrictionBatch(list(combination))
-            restriction_result = restriction_batch.search(chr.seq.upper())
-            # using (end - beginning), add 0 position so that first fragment is the length from the start to that position
-            # also add end position -- the entire length of the chromosome
-            # and remove duplicate positions from isoschizomers or similar cut sites
-            slice_positions: list = sorted(set([0] + [slice_pos for _, enzyme_slice_list in restriction_result.items() for slice_pos in enzyme_slice_list] + [len(chr.seq)]))
-
-            # generate "fragments" by cutting between slice positions
-            restriction_fragments_positions = _generate_restriction_fragments_fast(
-                    slice_positions_arg=slice_positions)
-        elif not args.use_fast:
-            restriction_enzymes = Restriction.RestrictionBatch(list(combination))
-            restriction_fragments_positions = _generate_restriction_fragments(
-                seq_arg=chr.seq,
-                restriction_enzymes_arg=restriction_enzymes)
-        
-        fragments_per_chrom[chr.id] = restriction_fragments_positions
-
-    # output fragments per chromosome
-    pickle.dump(fragments_per_chrom, open(output_dir.joinpath(f'{combination_str}.pos'), 'wb'))
-
 def _generate_restriction_fragments(seq_arg: SeqRecord, restriction_enzymes_arg: Restriction.RestrictionBatch) -> dict:
         """
         From a list of cutting positions, do the cutting and generate a list of fragment sizes, \
@@ -276,74 +222,185 @@ def _generate_restriction_fragments_fast(slice_positions_arg: list) -> dict:
                 end_pos = slice_positions_arg[i_pos + 1]
                 fragment_positions.append((start_pos, end_pos))
         return {'fragment_positions': fragment_positions}
-def _perform_catalysis(args: Namespace) -> None:
-    """
-
-    """
+def _mp_catalysis(args: Namespace) -> None:
+    """ Multiprocess wrapper for the _catalysis function. Also generates a list of enzymes for processing. """
 
     output_dir = args.input_path.parent.joinpath('.'+str(args.input_path.stem).replace(' ', '_'))
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # set list of restriction enzymes to query
-    if not args.no_combination:
-        restriction_enzymes_list: list = args.enzymes.split(';') if isinstance(args.enzymes, str) else args.enzymes
-        rst_enz_combinations: list = \
-        sorted([enzyme_pair for enzyme_pair in combinations(restriction_enzymes_list, 2)] +\
-        [(enzyme, ) for enzyme in restriction_enzymes_list])
+    # generate restriction fragment combinations, including singletons
+    if not args.as_is:
+        restriction_enzymes_list: list = args.enzymes.split(';')
+        rst_enz_combinations: list = sorted(
+            [enzyme_pair for enzyme_pair in combinations(restriction_enzymes_list, 2)] +\
+            [(enzyme, ) for enzyme in restriction_enzymes_list])
+    # generate a list of restriction fragment (singletons/pairs) for analysis
     else:
         restriction_enzymes_list: list = [tuple(enzyme_pair.split('-')) for enzyme_pair in args.enzymes.split(';')]
         rst_enz_combinations: list = sorted(restriction_enzymes_list)
 
+    map_offset = len(rst_enz_combinations)
+    map_args = tuple(zip(
+        [args.input_path]*map_offset,
+        rst_enz_combinations,
+        [output_dir]*map_offset,
+        [args.use_fast]*map_offset
+        ))
     with Pool() as pool:
-        pool.starmap(_combination_io, zip([args]*len(rst_enz_combinations), rst_enz_combinations, [output_dir]*len(rst_enz_combinations)))
-
+        pool.starmap(_catalysis, map_args)
     return None
-def _export_fasta(args: Namespace) -> None:
+def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path, _use_fast: bool) -> None:
     """
+    Function performs catalysis on a given genome with a given cocmbination of restriction enzymes.
+
+    Parameters:
+        _input_path: Path
+            the path of the genomic fasta (.fna)
+        _enzyme_combination: tuple
+            tuple containing the combination of restriction enzymes
+        _output_dir: Path
+            the path for output
+        _use_fast: bool
+            determines whether the fast algorithm is used
+    
+    Returns
+        (None)
     """
 
-    for file in args.positions_paths:
-        positions_dict: dict = pickle.load(open(file, 'rb'))
+    _method = 'fast' if _use_fast else 'comprehensive'
 
-        list_of_seqs: list = []
-        for chr in SeqIO.parse(args.input_path, 'fasta'):
+    _metadata = {
+        'metadata': {
+            'version': __version__,
+            'method': _method,
+        }
+    }
+
+    combination_str = '-'.join(list(_enzyme_combination))
+
+    fragments_per_chrom: dict = {}
+    fragments_per_chrom.update(_metadata)
+
+    for chr in SeqIO.parse(_input_path, 'fasta'):
+        # ignore the mitochrondrial genome, only do nuclear genome
+        if 'mitochondrion' in chr.description: continue
+
+        # generate a list of fragments per chromosome
+        #chr_str: str = f'chr{chr.description[-1]}'
+        fragments_per_chrom[chr.id] = {
+            'fragments_list': []
+            }
+        
+        restriction_fragments_positions: dict = {}
+        if _use_fast:
+            # get all unique slice positions
+            restriction_batch = Restriction.RestrictionBatch(list(_enzyme_combination))
+            restriction_result = restriction_batch.search(chr.seq.upper())
+            # using (end - beginning), add 0 position so that first fragment is the length from the start to that position
+            # also add end position -- the entire length of the chromosome
+            # and remove duplicate positions from isoschizomers or similar cut sites
+            slice_positions: list = sorted(set([0] + [slice_pos for _, enzyme_slice_list in restriction_result.items() for slice_pos in enzyme_slice_list] + [len(chr.seq)]))
+
+            # generate "fragments" by cutting between slice positions
+            restriction_fragments_positions = _generate_restriction_fragments_fast(
+                    slice_positions_arg=slice_positions)
+        elif not _use_fast:
+            restriction_enzymes = Restriction.RestrictionBatch(list(_enzyme_combination))
+            restriction_fragments_positions = _generate_restriction_fragments(
+                seq_arg=chr.seq,
+                restriction_enzymes_arg=restriction_enzymes)
+        
+        fragments_per_chrom[chr.id] = restriction_fragments_positions
+
+    # output fragments per chromosome
+    pickle.dump(fragments_per_chrom, open(_output_dir.joinpath(f'{combination_str}.pos'), 'wb'))
+# --------------------------------------------------
+def _mp_export_fasta(args: Namespace) -> None:
+    """ Multiprocess wrapper for the _export_fasta function. """
+    map_offset = len(args.position_paths)
+    map_args = tuple(zip(
+        (args.input_path)*map_offset,
+        args.position_paths,
+        (args.output_path)*map_offset,
+        (args.size_min, args.size_max)*map_offset
+        ))
+    with Pool() as pool: pool.starmap(_export_fasta, map_args)
+    return None
+def _export_fasta(_input_path: Path, _positions_path: Path, _output_path: Path, _size_filter: tuple) -> None:
+    """
+    Function outputs a fasta (.fasta) file of (all/filtered) fragments generated from a given genome.
+
+    Parameters:
+        _input_path: Path
+            path of a given genomic fasta (.fna)
+        _positions_path: Path
+            path of restriction fragment position data (.pos)
+        _output_path: Path
+            path of output directory for fasta (.fasta) sequences
+        _size_filter: tuple(min_size, max_size)
+            tuple of filtering options for each fragment
+    
+    Returns
+        (None)
+    """
+
+    positions_dict: dict = pickle.load(open(_positions_path, 'rb'))
+
+    list_of_seqs: list = []
+    for chr in SeqIO.parse(_input_path, 'fasta'):
+        if 'mitochondrion' in chr.description: continue
+        
+        for position in positions_dict[chr.id]['fragment_positions']:
+
+            fragment_length = position[1] - position[0]
+            if fragment_length < _size_filter[0]: continue
+            if _size_filter[1]: 
+                if fragment_length > _size_filter[1]: continue
+
+            fragment_SeqRecord = SeqRecord(
+                seq=chr.seq[position[0]:position[1]],
+                id=chr.id,
+                name='',
+                description=chr.description + f' {_positions_path.stem} {position[0]}-{position[1]}')
+            list_of_seqs.append(fragment_SeqRecord)
+    SeqIO.write(list_of_seqs, _output_path.joinpath(f'{_positions_path.stem}.fasta'), 'fasta')
+    return None
+# --------------------------------------------------
+def _mp_export_gff(args: Namespace) -> None:
+    """ Multiprocess wrapper for the _export_gff function. """
+    map_args = tuple(zip(
+        (args.input_path)*len(args.position_paths),
+        args.position_paths
+        ))
+    with Pool() as pool: pool.starmap(_export_gff, map_args)
+    return None
+def _export_gff(_input_path: Path, _positions_path: Path) -> None:
+    """
+    Function outputs a general feature format (.gff) file to describe the fragments generated from a given genome.
+
+    Parameters:
+        _input_path: Path
+            path of a given genomic fasta (.fna)
+        _positions_path: Path
+            path of restriction fragment position data (.pos)
+    
+    Returns:
+        (None)
+    """
+
+    with open(_positions_path.parent.joinpath(f'{_positions_path.stem}.gff'), mode='w', encoding='utf-8') as output_gff:
+        positions_dict: dict = pickle.load(open(_positions_path, 'rb'))
+
+        output_gff.write('##gff-version 3\n')
+        for chr in SeqIO.parse(_input_path, 'fasta'):
             if 'mitochondrion' in chr.description: continue
             
             for position in positions_dict[chr.id]['fragment_positions']:
-
-                fragment_length = position[1] - position[0]
-                if fragment_length < args.size_min: continue
-                if args.size_max: 
-                    if fragment_length > args.size_max: continue
-
-                fragment_SeqRecord = SeqRecord(
-                    seq=chr.seq[position[0]:position[1]],
-                    id=chr.id,
-                    name='',
-                    description=chr.description + f' {file.stem} {position[0]}-{position[1]}')
-                list_of_seqs.append(fragment_SeqRecord)
-        SeqIO.write(list_of_seqs, args.output_path.joinpath(f'{file.stem}.fasta'), 'fasta')
-
-def _mp_export_gff(args: Namespace) -> None:
-    """
-    """
-
-def _export_gff(args: Namespace) -> None:
-    """
-    """
-
-    for file in args.positions_paths:
-        with open(args.output_path.joinpath(f'{file.stem}.gff'), mode='w', encoding='utf-8') as output_gff:
-            positions_dict: dict = pickle.load(open(file, 'rb'))
-
-            output_gff.write('##gff-version 3\n')
-            for chr in SeqIO.parse(args.input_path, 'fasta'):
-                if 'mitochondrion' in chr.description: continue
-                
-                for position in positions_dict[chr.id]['fragment_positions']:
-                    gff_str = f"{chr.id}\tpy-simRAD\trestriction_fragment\t{position[0]}\t{position[1]}\t.\t+\t.\n"
-                    output_gff.write(gff_str)
+                gff_str = f"{chr.id}\tpy-simRAD\trestriction_fragment\t{position[0]}\t{position[1]}\t.\t+\t.\n"
+                output_gff.write(gff_str)
     return None
+# --------------------------------------------------
 def _print_genomic_representation(args: Namespace) -> None:
     """
     """
@@ -393,12 +450,11 @@ def main() -> None:
 
     args = get_args()
 
-    if args.options=='catalyze': _perform_catalysis(args)
+    if args.options=='catalyze': _mp_catalysis(args)
     if args.options=='export':
-        if args.export_type=='fasta': _export_fasta(args)
-        if args.export_type=='gff': _export_gff(args)
+        if args.export_type=='fasta': _mp_export_fasta(args)
+        if args.export_type=='gff': _mp_export_gff(args)
     if args.options=='genome_rep': _print_genomic_representation(args)
-
 # --------------------------------------------------
 if __name__ == '__main__':
     main()
