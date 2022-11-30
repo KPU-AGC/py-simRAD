@@ -5,7 +5,7 @@ Purpose: Perform double restriction digest on a given genome.
 """
 __author__ = "Erick Samera; Michael Ke"
 __version__ = "4.0.0"
-__comments__ = "stable; better implementation"
+__comments__ = "stable; multi-processing"
 # --------------------------------------------------
 from argparse import (
     Namespace,
@@ -13,10 +13,10 @@ from argparse import (
     RawTextHelpFormatter)
 from pathlib import Path
 # --------------------------------------------------
-from itertools import combinations
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Restriction import Restriction
+from itertools import combinations
 import pandas as pd
 import pickle
 from multiprocessing import Pool
@@ -49,7 +49,7 @@ def get_args() -> Namespace:
         default="SbfI;EcoRI;SphI;PstI;MspI;MseI",
         help='enzymes to generate combinations for double-restriction, ex: "EcoRI;BamHI" (default: "SbfI;EcoRI;SphI;PstI;MspI;MseI")')
     group_rst_enz_parser.add_argument(
-        '--no_combination',
+        '--as_is',
         dest='no_combination',
         action='store_true',
         help='do not generate combinations for double-restriction, use enzyme list as is')
@@ -151,17 +151,26 @@ def get_args() -> Namespace:
         if invalid_enzymes: parser.error(f"Couldn't process the following enzymes: {' '.join(invalid_enzymes)}")
     return args
 # --------------------------------------------------
-def _combination_io(args, combination, output_dir):
-    combination_str = '-'.join(list(combination))
+def _combination_io(args: Namespace, combination: tuple, output_dir: Path) -> None:
+    """
+    
+    """
 
-    _method = 'fast' if args.use_fast else 'standard'
+    _method = 'fast' if args.use_fast else 'comprehensive'
 
-    fragments_per_chrom: dict = {
+    _metadata = {
         'metadata': {
             'version': __version__,
-            'method': _method
+            'method': _method,
         }
     }
+
+
+
+    combination_str = '-'.join(list(combination))
+
+    fragments_per_chrom: dict = {}
+    fragments_per_chrom.update(_metadata)
 
     for chr in SeqIO.parse(args.input_path, 'fasta'):
         # ignore the mitochrondrial genome, only do nuclear genome
@@ -193,7 +202,10 @@ def _combination_io(args, combination, output_dir):
                 restriction_enzymes_arg=restriction_enzymes)
         
         fragments_per_chrom[chr.id] = restriction_fragments_positions
+
+    # output fragments per chromosome
     pickle.dump(fragments_per_chrom, open(output_dir.joinpath(f'{combination_str}.pos'), 'wb'))
+
 def _generate_restriction_fragments(seq_arg: SeqRecord, restriction_enzymes_arg: Restriction.RestrictionBatch) -> dict:
         """
         From a list of cutting positions, do the cutting and generate a list of fragment sizes, \
@@ -268,8 +280,7 @@ def _perform_catalysis(args: Namespace) -> None:
     """
 
     """
-    _method = 'fast' if args.use_fast else 'standard'
-    
+
     output_dir = args.input_path.parent.joinpath('.'+str(args.input_path.stem).replace(' ', '_'))
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -284,7 +295,7 @@ def _perform_catalysis(args: Namespace) -> None:
         rst_enz_combinations: list = sorted(restriction_enzymes_list)
 
     with Pool() as pool:
-        pool.starmap(_combination_io, zip([args]*len(rst_enz_combinations), rst_enz_combinations, [output_dir]*len(rst_enz_combinations)))    
+        pool.starmap(_combination_io, zip([args]*len(rst_enz_combinations), rst_enz_combinations, [output_dir]*len(rst_enz_combinations)))
 
     return None
 def _export_fasta(args: Namespace) -> None:
@@ -312,9 +323,15 @@ def _export_fasta(args: Namespace) -> None:
                     description=chr.description + f' {file.stem} {position[0]}-{position[1]}')
                 list_of_seqs.append(fragment_SeqRecord)
         SeqIO.write(list_of_seqs, args.output_path.joinpath(f'{file.stem}.fasta'), 'fasta')
+
+def _mp_export_gff(args: Namespace) -> None:
+    """
+    """
+
 def _export_gff(args: Namespace) -> None:
     """
     """
+
     for file in args.positions_paths:
         with open(args.output_path.joinpath(f'{file.stem}.gff'), mode='w', encoding='utf-8') as output_gff:
             positions_dict: dict = pickle.load(open(file, 'rb'))
