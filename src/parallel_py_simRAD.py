@@ -151,6 +151,8 @@ def get_args() -> Namespace:
             invalid_enzymes: list = [enzyme for enzyme in flattened_enzymes if enzyme not in Restriction.AllEnzymes.elements()]
 
         if invalid_enzymes: parser.error(f"Couldn't process the following enzymes: {' '.join(invalid_enzymes)}")
+        if not args.input_path.is_file():
+            parser.error('Invalid input path to a genomic fasta (.fna)!')
     return args
 # --------------------------------------------------
 def _generate_restriction_fragments(_input_seq: SeqRecord, _restriction_batch: Restriction.RestrictionBatch) -> dict:
