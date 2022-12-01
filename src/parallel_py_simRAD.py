@@ -4,7 +4,7 @@ __description__ =\
 Purpose: Perform double restriction digest on a given genome.
 """
 __author__ = "Erick Samera; Michael Ke"
-__version__ = "4.1.0"
+__version__ = "4.1.2"
 __comments__ = "stable; multi-processing"
 # TODO: is it worth it to add support for triple restriction digest?
 # --------------------------------------------------
@@ -292,12 +292,6 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
     for chr in SeqIO.parse(_input_path, 'fasta'):
         # ignore the mitochrondrial genome, only do nuclear genome
         if 'mitochondrion' in chr.description: continue
-
-        # generate a list of fragments per chromosome
-        #chr_str: str = f'chr{chr.description[-1]}'
-        fragments_per_chrom[chr.id] = {
-            'fragments_list': []
-            }
         
         restriction_fragments_positions: dict = {}
         if _use_fast:
@@ -322,6 +316,7 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
 
     # output fragments per chromosome
     pickle.dump(fragments_per_chrom, open(output_file, 'wb'))
+    return None
 # --------------------------------------------------
 def _mp_export_fasta(args: Namespace) -> None:
     """ Multiprocess wrapper for the _export_fasta function. """
@@ -429,6 +424,7 @@ def _mp_print_genomic_representation(args: Namespace) -> None:
     for row in sorted([row for row in genomic_representation_list if row[0]], key=lambda x: x[1]):
         row = [str(item) for item in row]
         print('\t'.join(row))
+    return None
 def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _representation_filter: tuple) -> list:
     """
     Print genomic representation (%) to the console, given whatever filtering options.
@@ -488,6 +484,8 @@ def main() -> None:
         if args.export_type=='fasta': _mp_export_fasta(args)
         if args.export_type=='gff': _mp_export_gff(args)
     if args.options=='summary': _mp_print_genomic_representation(args)
+
+    return None
 # --------------------------------------------------
 if __name__ == '__main__':
     main()
