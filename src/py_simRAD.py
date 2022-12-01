@@ -17,7 +17,6 @@ from itertools import combinations
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Restriction import Restriction
-import pandas as pd
 import pickle
 # --------------------------------------------------
 def get_args() -> Namespace:
@@ -254,12 +253,6 @@ def _perform_catalysis(args: Namespace) -> None:
         for chr in SeqIO.parse(args.input_path, 'fasta'):
             # ignore the mitochrondrial genome, only do nuclear genome
             if 'mitochondrion' in chr.description: continue
-
-            # generate a list of fragments per chromosome
-            #chr_str: str = f'chr{chr.description[-1]}'
-            fragments_per_chrom[chr.id] = {
-                'fragments_list': []
-                }
             
             restriction_fragments_positions: dict = {}
             if args.use_fast:
