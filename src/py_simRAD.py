@@ -17,7 +17,6 @@ from itertools import combinations
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Restriction import Restriction
-import pandas as pd
 import pickle
 # --------------------------------------------------
 def get_args() -> Namespace:

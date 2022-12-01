@@ -282,8 +282,8 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
     if output_file.exists():
         previous_session = pickle.load(open(output_file, 'rb'))
         if all([
-                previous_session['metadata']['version'] == __version__,
-                previous_session['metadata']['method'] == _method,]):
+                previous_session['metadata']['version'].split('.')[:2] == __version__.split('.')[:2],   # check for MAJOR.MINOR, not PATCH
+                previous_session['metadata']['method'] == _method,]):                                   # check that method is the same
             return None
 
     fragments_per_chrom: dict = {}
@@ -376,8 +376,9 @@ def _export_fasta(_input_path: Path, _positions_path: Path, _output_path: Path, 
 # --------------------------------------------------
 def _mp_export_gff(args: Namespace) -> None:
     """ Multiprocess wrapper for the _export_gff function. """
+    map_offset = len(args.position_paths)
     map_args = tuple(zip(
-        (args.input_path)*len(args.position_paths),
+        (args.input_path)*map_offset,
         args.position_paths
         ))
     with Pool() as pool: pool.starmap(_export_gff, map_args)
@@ -408,49 +409,74 @@ def _export_gff(_input_path: Path, _positions_path: Path) -> None:
                 output_gff.write(gff_str)
     return None
 # --------------------------------------------------
-def _print_genomic_representation(args: Namespace) -> None:
-    """
-    """
+def _mp_print_genomic_representation(args: Namespace) -> None:
+    """ Multiprocess wrapper for the _export_gff function. """
 
     chr_list = [key for key in pickle.load(open(args.positions_paths[0], 'rb')).keys() if key != 'metadata']
-    chr_header: str = '\t'.join(chr_list)
 
-    print(f'enzyme\ttotal repr (%)\t{chr_header}')
+    map_offset = len(args.positions_paths)
+    map_args = tuple(zip(
+        args.positions_paths,
+        [(args.size_min, args.size_max)]*map_offset,
+        [(args.rep_min, args.rep_max)]*map_offset
+        ))
 
-    for file in args.positions_paths:
-        positions_dict: dict = pickle.load(open(file, 'rb'))
+    with Pool() as pool: 
+        genomic_representation_list: list = pool.starmap(_print_genomic_representation, map_args)
 
-        total_genome_length: int = 0
-        genome_represented: int = 0
-        per_chromosome_rep_list: list = []
+    headers: list = ['enzmye', 'total repr (%)'] + chr_list
+    print('\t'.join(headers))
+    for row in sorted([row for row in genomic_representation_list if row[0]], key=lambda x: x[1]):
+        row = [str(item) for item in row]
+        print('\t'.join(row))
+def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _representation_filter: tuple) -> list:
+    """
+    Print genomic representation (%) to the console, given whatever filtering options.
+
+    Parameters:
+        _positions_path: Path
+            path of restriction fragment position data (.pos)
+        _size_filter: tuple(min_size, max_size)
+            tuple of filtering options for each fragment
+        _representation_filter: tuple(min_rep, max_rep)
+            tuple of filtering options for genomic representation percentage
+    
+    Returns:
+        (list)
+            list of [enzyme combination, percent genome represented] + [representation per chromosome]
+    """
+    positions_dict: dict = pickle.load(open(_positions_path, 'rb'))
+
+    total_genome_length: int = 0
+    genome_represented: int = 0
+    per_chromosome_rep_list: list = []
+    
+    chromosomes_list: list = [key for key in positions_dict.keys() if key != 'metadata']
+
+    for chr in chromosomes_list:
+        chr_length = positions_dict[chr]['fragment_positions'][-1][1]
+        total_genome_length += chr_length
+    
+        chromosome_represented: int = 0
+        for position in positions_dict[chr]['fragment_positions']:
+
+            fragment_length = position[1] - position[0]
+            if fragment_length < _size_filters[0]: continue
+            if _size_filters[1]: 
+                if fragment_length > _size_filters[1]: continue
+            chromosome_represented += fragment_length
+
+        genome_represented += chromosome_represented
         
-        chromosomes_list: list = [key for key in positions_dict.keys() if key != 'metadata']
+        perc_chromosome_represented: float = round(chromosome_represented/chr_length*100, 3)
+        per_chromosome_rep_list.append(perc_chromosome_represented)
+    perc_genome_represented: float = round(genome_represented/total_genome_length*100, 3)
 
-        for chr in chromosomes_list:
-            
-            chr_length = positions_dict[chr]['fragment_positions'][-1][1]
-            total_genome_length += chr_length
-        
-            chromosome_represented: int = 0
-            for position in positions_dict[chr]['fragment_positions']:
+    if perc_genome_represented < _representation_filter[0]: return [None]
+    if _representation_filter[1]: 
+        if perc_genome_represented > _representation_filter[1]: return [None]
 
-                fragment_length = position[1] - position[0]
-                if fragment_length < args.size_min: continue
-                if args.size_max: 
-                    if fragment_length > args.size_max: continue
-                chromosome_represented += fragment_length
-
-            genome_represented += chromosome_represented
-            
-            perc_chromosome_represented: float = round(chromosome_represented/chr_length*100, 3)
-            per_chromosome_rep_list.append(perc_chromosome_represented)
-        perc_genome_represented: float = round(genome_represented/total_genome_length*100, 3)
-
-        if perc_genome_represented < args.rep_min: continue
-        if args.rep_max: 
-            if perc_genome_represented > args.rep_max: continue
-        per_chromosome_str: str = '\t'.join([f'{i}' for i in per_chromosome_rep_list])
-        print(f'{file.stem}\t{perc_genome_represented}\t{per_chromosome_str}')
+    return [_positions_path.stem, perc_genome_represented] + per_chromosome_rep_list
 # --------------------------------------------------
 def main() -> None:
     """ Insert docstring here """
@@ -461,7 +487,7 @@ def main() -> None:
     if args.options=='export':
         if args.export_type=='fasta': _mp_export_fasta(args)
         if args.export_type=='gff': _mp_export_gff(args)
-    if args.options=='summary': _print_genomic_representation(args)
+    if args.options=='summary': _mp_print_genomic_representation(args)
 # --------------------------------------------------
 if __name__ == '__main__':
     main()
