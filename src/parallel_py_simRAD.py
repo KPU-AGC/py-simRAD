@@ -6,8 +6,7 @@ Purpose: Perform double restriction digest on a given genome.
 __author__ = "Erick Samera; Michael Ke"
 __version__ = "4.1.0"
 __comments__ = "stable; multi-processing"
-# TODO: add support for checking whether the position file already exists.
-# TODO:
+# TODO: is it worth it to add support for triple restriction digest?
 # --------------------------------------------------
 from argparse import (
     Namespace,
@@ -31,12 +30,13 @@ def get_args() -> Namespace:
         formatter_class=RawTextHelpFormatter)
     
     exploratory_subparser = parser.add_subparsers(
-        title='analysis options',
+        title='analysis options (choose one)',
         dest='options',
         required=True,
+        metavar='',
         description="options for performing or visualizing exploratory restriction digests")
 
-    parser_catalyze = exploratory_subparser.add_parser('catalyze', help='Given a genome, generate restriction fragments using combinations of restriction enzymes (RUN FIRST)')
+    parser_catalyze = exploratory_subparser.add_parser('catalyze', help='generate restriction fragment positions using restriction enzyme combinations (RUN FIRST)')
     parser_catalyze.add_argument(
         'input_path',
         type=Path,
@@ -60,7 +60,7 @@ def get_args() -> Namespace:
         action='store_true',
         help="use the fast algorithm (but slightly inaccurate)")
 
-    parser_export = exploratory_subparser.add_parser('export', help='Given a set of restriction fragment positions, export them into other data types')
+    parser_export = exploratory_subparser.add_parser('export', help='given a set of restriction fragment positions, export them into other data types')
     parser_export.add_argument(
         'input_path',
         type=Path,
@@ -68,7 +68,7 @@ def get_args() -> Namespace:
     parser_export.add_argument(
         'output_path',
         type=Path,
-        help="path of output file (see --type argument)")
+        help="path of directory to output the files (see --type argument)")
     parser_export.add_argument(
         'positions_paths',
         type=Path,
@@ -90,7 +90,7 @@ def get_args() -> Namespace:
         type=int,
         default=None,
         help="max fragment size for filtering (default=None)")
-    group_export_options = parser_export.add_argument_group(title='asdfasdf')
+    group_export_options = parser_export.add_argument_group(title='export options')
     group_export_options.add_argument(
         '--type',
         dest='export_type',
@@ -98,9 +98,10 @@ def get_args() -> Namespace:
         type=str,
         choices=['fasta', 'gff'],
         default='fasta',
+        required=True,
         help="export types: ['fasta', 'gff'] (default='fasta')")
 
-    parser_genome_rep = exploratory_subparser.add_parser('genome_rep', help='Given a set of restriction fragment positions, print out percent genomic representation')
+    parser_genome_rep = exploratory_subparser.add_parser('summary', help='given a set of restriction fragment positions, print out percent genomic representation')
     parser_genome_rep.add_argument(
         'positions_paths',
         type=Path,
@@ -110,34 +111,34 @@ def get_args() -> Namespace:
         '-m',
         '--min',
         dest='size_min',
-        metavar='INT',
+        metavar='n',
         type=int,
         default=0,
-        help="min fragment size for filtering (default=None)")
+        help="min fragment size (bp) for filtering (default=0)")
     parser_genome_rep.add_argument(
         '-M',
         '--max',
         dest='size_max',
-        metavar='INT',
+        metavar='n',
         type=int,
         default=None,
-        help="max fragment size for filtering (default=None)")
+        help="max fragment size (bp) for filtering (default=None)")
     parser_genome_rep.add_argument(
         '-r',
         '--min_rep',
         dest='rep_min',
-        metavar='INT',
+        metavar='n',
         type=int,
         default=0,
-        help="min fragment size for filtering (default=None)")
+        help="min representation (%%) for filtering (default=0)")
     parser_genome_rep.add_argument(
         '-R',
         '--max_rep',
         dest='rep_max',
-        metavar='INT',
+        metavar='n',
         type=int,
         default=None,
-        help="max fragment size for filtering (default=None)")
+        help="max representation (%%) for filtering (default=None)")
     args = parser.parse_args()
 
     # parser errors and processing
@@ -152,33 +153,29 @@ def get_args() -> Namespace:
         if invalid_enzymes: parser.error(f"Couldn't process the following enzymes: {' '.join(invalid_enzymes)}")
     return args
 # --------------------------------------------------
-def _generate_restriction_fragments(seq_arg: SeqRecord, restriction_enzymes_arg: Restriction.RestrictionBatch) -> dict:
+def _generate_restriction_fragments(_input_seq: SeqRecord, _restriction_batch: Restriction.RestrictionBatch) -> dict:
         """
         From a list of cutting positions, do the cutting and generate a list of fragment sizes, \
         but this way is more biologically accurate, technically. It cuts with the first enzyme, \
         then cuts again with the second enzyme (if applicable).
 
         Parameters:
-            seq_arg: Seq
+            _input_seq: Seq
                 chromosomal sequence to cut
-            restriction_enzymes_arg: RestrictionBatch
+            _restriction_batch: RestrictionBatch
                 a set of enzymes to cut it with
-            buffer_arg: int
-                biological buffer, assuming that enzyme can't latch on to edge sites
-            fasta_output_path_arg: path
-                path to output fastas if given
-        
+
         Returns:
             (dict)
                 list of restriction restriction fragments of given lengths
         """
 
-        enzymes = [i for i in restriction_enzymes_arg]
+        enzymes = [i for i in _restriction_batch]
         first_restriction = enzymes[0]
         second_restriction = enzymes[1] if len(enzymes)>1 else None
 
         # generate restriction fragments using the first enzyme,
-        first_pass = first_restriction.catalyse(seq_arg)
+        first_pass = first_restriction.catalyse(_input_seq)
 
         total_positions = []
         first_pass_offsets: list = [0]
@@ -195,19 +192,19 @@ def _generate_restriction_fragments(seq_arg: SeqRecord, restriction_enzymes_arg:
                     second_pass_offsets.append(second_pass_offsets[-1] + len(second_fragment))
                 second_pass_offsets.pop()
                 total_positions += second_pass_offsets
-            total_positions.append(len(seq_arg))
+            total_positions.append(len(_input_seq))
 
         else:
-            first_pass_offsets.append(len(seq_arg))
+            first_pass_offsets.append(len(_input_seq))
             total_positions = first_pass_offsets
 
         return _generate_restriction_fragments_fast(sorted(set(total_positions)))
-def _generate_restriction_fragments_fast(slice_positions_arg: list) -> dict:
+def _generate_restriction_fragments_fast(_slice_positions: list) -> dict:
         """
         From a list of cutting positions, do the cutting and generate a list of fragment sizes.
 
         Parameters:
-            slice_positions_arg: list
+            _slice_positions: list
                 list of slice positions from the restriction enzymes
 
         Returns:
@@ -215,11 +212,11 @@ def _generate_restriction_fragments_fast(slice_positions_arg: list) -> dict:
                 list of restriction restriction fragments of given lengths
         """
         fragment_positions: list = []
-        len_slice_positions: int = len(slice_positions_arg)-1
-        for i_pos, _ in enumerate(slice_positions_arg):
+        len_slice_positions: int = len(_slice_positions)-1
+        for i_pos, _ in enumerate(_slice_positions):
             if i_pos < len_slice_positions:
-                start_pos = slice_positions_arg[i_pos]
-                end_pos = slice_positions_arg[i_pos + 1]
+                start_pos = _slice_positions[i_pos]
+                end_pos = _slice_positions[i_pos + 1]
                 fragment_positions.append((start_pos, end_pos))
         return {'fragment_positions': fragment_positions}
 def _mp_catalysis(args: Namespace) -> None:
@@ -277,7 +274,17 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
         }
     }
 
-    combination_str = '-'.join(list(_enzyme_combination))
+    combination_str: str = '-'.join(list(_enzyme_combination))
+    output_file: Path = _output_dir.joinpath(f'{combination_str}.pos')
+
+    # check if there is a previous output that exists and matches the same version and method,
+    # and don't bother redoing it if so.
+    if output_file.exists():
+        previous_session = pickle.load(open(output_file, 'rb'))
+        if all([
+                previous_session['metadata']['version'] == __version__,
+                previous_session['metadata']['method'] == _method,]):
+            return None
 
     fragments_per_chrom: dict = {}
     fragments_per_chrom.update(_metadata)
@@ -304,17 +311,17 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
 
             # generate "fragments" by cutting between slice positions
             restriction_fragments_positions = _generate_restriction_fragments_fast(
-                    slice_positions_arg=slice_positions)
+                    _slice_positions=slice_positions)
         elif not _use_fast:
             restriction_enzymes = Restriction.RestrictionBatch(list(_enzyme_combination))
             restriction_fragments_positions = _generate_restriction_fragments(
-                seq_arg=chr.seq,
-                restriction_enzymes_arg=restriction_enzymes)
+                _input_seq=chr.seq,
+                _restriction_batch=restriction_enzymes)
         
         fragments_per_chrom[chr.id] = restriction_fragments_positions
 
     # output fragments per chromosome
-    pickle.dump(fragments_per_chrom, open(_output_dir.joinpath(f'{combination_str}.pos'), 'wb'))
+    pickle.dump(fragments_per_chrom, open(output_file, 'wb'))
 # --------------------------------------------------
 def _mp_export_fasta(args: Namespace) -> None:
     """ Multiprocess wrapper for the _export_fasta function. """
@@ -454,7 +461,7 @@ def main() -> None:
     if args.options=='export':
         if args.export_type=='fasta': _mp_export_fasta(args)
         if args.export_type=='gff': _mp_export_gff(args)
-    if args.options=='genome_rep': _print_genomic_representation(args)
+    if args.options=='summary': _print_genomic_representation(args)
 # --------------------------------------------------
 if __name__ == '__main__':
     main()
