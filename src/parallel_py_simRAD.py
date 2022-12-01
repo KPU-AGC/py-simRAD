@@ -139,6 +139,16 @@ def get_args() -> Namespace:
         type=int,
         default=None,
         help="max representation (%%) for filtering (default=None)")
+    group_export_delimiter = parser_genome_rep.add_argument_group(title='format options')
+    group_export_delimiter.add_argument(
+        '--delimiter',
+        dest='delimiter',
+        metavar='STR',
+        type=str,
+        choices=['tab', ','],
+        default='tab',
+        help="delimiter for printing (use comma to redirect to .csv): ['tab', ','] (default=',')")
+
     args = parser.parse_args()
 
     # parser errors and processing
@@ -151,6 +161,8 @@ def get_args() -> Namespace:
             invalid_enzymes: list = [enzyme for enzyme in flattened_enzymes if enzyme not in Restriction.AllEnzymes.elements()]
 
         if invalid_enzymes: parser.error(f"Couldn't process the following enzymes: {' '.join(invalid_enzymes)}")
+        if not args.input_path.is_file():
+            parser.error('Invalid input path to a genomic fasta (.fna)!')
     return args
 # --------------------------------------------------
 def _generate_restriction_fragments(_input_seq: SeqRecord, _restriction_batch: Restriction.RestrictionBatch) -> dict:
@@ -320,12 +332,12 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
 # --------------------------------------------------
 def _mp_export_fasta(args: Namespace) -> None:
     """ Multiprocess wrapper for the _export_fasta function. """
-    map_offset = len(args.position_paths)
+    map_offset = len(args.positions_paths)
     map_args = tuple(zip(
-        (args.input_path)*map_offset,
-        args.position_paths,
-        (args.output_path)*map_offset,
-        (args.size_min, args.size_max)*map_offset
+        [(args.input_path)]*map_offset,
+        args.positions_paths,
+        [(args.output_path)]*map_offset,
+        [(args.size_min, args.size_max)]*map_offset
         ))
     with Pool() as pool: pool.starmap(_export_fasta, map_args)
     return None
@@ -371,14 +383,16 @@ def _export_fasta(_input_path: Path, _positions_path: Path, _output_path: Path, 
 # --------------------------------------------------
 def _mp_export_gff(args: Namespace) -> None:
     """ Multiprocess wrapper for the _export_gff function. """
-    map_offset = len(args.position_paths)
+    map_offset = len(args.positions_paths)
     map_args = tuple(zip(
-        (args.input_path)*map_offset,
-        args.position_paths
+        [(args.input_path)]*map_offset,
+        args.positions_paths,
+        [(args.output_path)]*map_offset,
+        [(args.size_min, args.size_max)]*map_offset
         ))
     with Pool() as pool: pool.starmap(_export_gff, map_args)
     return None
-def _export_gff(_input_path: Path, _positions_path: Path) -> None:
+def _export_gff(_input_path: Path, _positions_path: Path, _output_path: Path, _size_filter: tuple) -> None:
     """
     Function outputs a general feature format (.gff) file to describe the fragments generated from a given genome.
 
@@ -392,7 +406,7 @@ def _export_gff(_input_path: Path, _positions_path: Path) -> None:
         (None)
     """
 
-    with open(_positions_path.parent.joinpath(f'{_positions_path.stem}.gff'), mode='w', encoding='utf-8') as output_gff:
+    with open(_output_path.joinpath(f'{_positions_path.stem}.gff'), mode='w', encoding='utf-8') as output_gff:
         positions_dict: dict = pickle.load(open(_positions_path, 'rb'))
 
         output_gff.write('##gff-version 3\n')
@@ -400,7 +414,11 @@ def _export_gff(_input_path: Path, _positions_path: Path) -> None:
             if 'mitochondrion' in chr.description: continue
             
             for position in positions_dict[chr.id]['fragment_positions']:
-                gff_str = f"{chr.id}\tpy-simRAD\trestriction_fragment\t{position[0]}\t{position[1]}\t.\t+\t.\n"
+                fragment_length = position[1] - position[0]
+                if fragment_length < _size_filter[0]: continue
+                if _size_filter[1]: 
+                    if fragment_length > _size_filter[1]: continue
+                gff_str = f"{chr.id}\tpy-simRADv{__version__}\trestriction_fragment\t{position[0]}\t{position[1]}\t.\t+\t.\n"
                 output_gff.write(gff_str)
     return None
 # --------------------------------------------------
@@ -409,21 +427,23 @@ def _mp_print_genomic_representation(args: Namespace) -> None:
 
     chr_list = [key for key in pickle.load(open(args.positions_paths[0], 'rb')).keys() if key != 'metadata']
 
+    delimiter = '\t' if args.delimiter == 'tab' else ','
+
     map_offset = len(args.positions_paths)
     map_args = tuple(zip(
         args.positions_paths,
         [(args.size_min, args.size_max)]*map_offset,
-        [(args.rep_min, args.rep_max)]*map_offset
+        [(args.rep_min, args.rep_max)]*map_offset,
         ))
 
     with Pool() as pool: 
         genomic_representation_list: list = pool.starmap(_print_genomic_representation, map_args)
 
     headers: list = ['enzmye', 'total repr (%)'] + chr_list
-    print('\t'.join(headers))
+    print(delimiter.join(headers))
     for row in sorted([row for row in genomic_representation_list if row[0]], key=lambda x: x[1]):
         row = [str(item) for item in row]
-        print('\t'.join(row))
+        print(delimiter.join(row))
     return None
 def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _representation_filter: tuple) -> list:
     """
