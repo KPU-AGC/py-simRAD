@@ -147,7 +147,7 @@ def get_args() -> Namespace:
         type=str,
         choices=['tab', ','],
         default='tab',
-        help="delimiter for printing (use comma to redirect to .csv): ['tab', ','] (default=',')")
+        help="delimiter for printing (use comma to redirect to .csv): ['tab', ','] (default='tab')")
 
     args = parser.parse_args()
 
