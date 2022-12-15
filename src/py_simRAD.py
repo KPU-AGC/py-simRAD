@@ -148,6 +148,14 @@ def get_args() -> Namespace:
         choices=['tab', ','],
         default='tab',
         help="delimiter for printing (use comma to redirect to .csv): ['tab', ','] (default='tab')")
+    group_export_delimiter.add_argument(
+        '--type',
+        dest='summary_type',
+        metavar='STR',
+        type=str,
+        choices=['genomic_rep', 'fragment_num'],
+        default='genomic_rep',
+        help="output type")
 
     args = parser.parse_args()
 
@@ -434,18 +442,23 @@ def _mp_print_genomic_representation(args: Namespace) -> None:
         args.positions_paths,
         [(args.size_min, args.size_max)]*map_offset,
         [(args.rep_min, args.rep_max)]*map_offset,
+        [args.summary_type]*map_offset,
         ))
 
     with Pool() as pool: 
         genomic_representation_list: list = pool.starmap(_print_genomic_representation, map_args)
 
-    headers: list = ['enzmye', 'total repr (%)'] + chr_list
+    total_val: str = ""
+    if args.summary_type == "genomic_rep": total_val = 'total repr (%)'
+    elif args.summary_type == "fragment_num": total_val = "total number of fragments"
+
+    headers: list = ['enzmye', total_val] + chr_list
     print(delimiter.join(headers))
     for row in sorted([row for row in genomic_representation_list if row[0]], key=lambda x: x[1]):
         row = [str(item) for item in row]
         print(delimiter.join(row))
     return None
-def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _representation_filter: tuple) -> list:
+def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _representation_filter: tuple, _print_type: str) -> list:
     """
     Print genomic representation (%) to the console, given whatever filtering options.
 
@@ -463,36 +476,44 @@ def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _
     """
     positions_dict: dict = pickle.load(open(_positions_path, 'rb'))
 
-    total_genome_length: int = 0
-    genome_represented: int = 0
-    per_chromosome_rep_list: list = []
-    
-    chromosomes_list: list = [key for key in positions_dict.keys() if key != 'metadata']
-
-    for chr in chromosomes_list:
-        chr_length = positions_dict[chr]['fragment_positions'][-1][1]
-        total_genome_length += chr_length
-    
-        chromosome_represented: int = 0
-        for position in positions_dict[chr]['fragment_positions']:
-
-            fragment_length = position[1] - position[0]
-            if fragment_length < _size_filters[0]: continue
-            if _size_filters[1]: 
-                if fragment_length > _size_filters[1]: continue
-            chromosome_represented += fragment_length
-
-        genome_represented += chromosome_represented
+    def _genomic_representation():
+        total_genome_length: int = 0
+        genome_represented: int = 0
+        per_chromosome_rep_list: list = []
         
-        perc_chromosome_represented: float = round(chromosome_represented/chr_length*100, 3)
-        per_chromosome_rep_list.append(perc_chromosome_represented)
-    perc_genome_represented: float = round(genome_represented/total_genome_length*100, 3)
+        chromosomes_list: list = [key for key in positions_dict.keys() if key != 'metadata']
 
-    if perc_genome_represented < _representation_filter[0]: return [None]
-    if _representation_filter[1]: 
-        if perc_genome_represented > _representation_filter[1]: return [None]
+        for chr in chromosomes_list:
+            chr_length = positions_dict[chr]['fragment_positions'][-1][1]
+            total_genome_length += chr_length
+        
+            chromosome_represented: int = 0
+            for position in positions_dict[chr]['fragment_positions']:
 
-    return [_positions_path.stem, perc_genome_represented] + per_chromosome_rep_list
+                fragment_length = position[1] - position[0]
+                if fragment_length < _size_filters[0]: continue
+                if _size_filters[1]: 
+                    if fragment_length > _size_filters[1]: continue
+                chromosome_represented += fragment_length
+
+            genome_represented += chromosome_represented
+            
+            perc_chromosome_represented: float = round(chromosome_represented/chr_length*100, 3)
+            per_chromosome_rep_list.append(perc_chromosome_represented)
+        perc_genome_represented: float = round(genome_represented/total_genome_length*100, 3)
+
+        if perc_genome_represented < _representation_filter[0]: return [None]
+        if _representation_filter[1]: 
+            if perc_genome_represented > _representation_filter[1]: return [None]
+
+        return [_positions_path.stem, perc_genome_represented] + per_chromosome_rep_list
+    
+    if _print_type == 'genomic_rep': _genomic_representation()
+    elif _print_type == 'fragment_num':
+        fragments_per_chromosome: list = [len((positions_dict[chr]['fragment_positions'])) for chr in positions_dict if chr != 'metadata']
+        total_fragment_count: int = sum(fragments_per_chromosome)
+        return [_positions_path.stem, total_fragment_count, *fragments_per_chromosome]
+
 # --------------------------------------------------
 def main() -> None:
     """ Insert docstring here """
