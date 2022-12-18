@@ -286,7 +286,6 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
     """
 
     _method = 'fast' if _use_fast else 'comprehensive'
-
     _metadata = {
         'metadata': {
             'version': __version__,
@@ -487,8 +486,9 @@ def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _
             chr_length = positions_dict[chr]['fragment_positions'][-1][1]
             total_genome_length += chr_length
         
-            chromosome_represented: int = 0
-            for position in positions_dict[chr]['fragment_positions']:
+        perc_chromosome_represented: float = round(chromosome_represented/chr_length*100, 3)
+        per_chromosome_rep_list.append(perc_chromosome_represented)
+    perc_genome_represented: float = round(genome_represented/total_genome_length*100, 3)
 
                 fragment_length = position[1] - position[0]
                 if fragment_length < _size_filters[0]: continue
@@ -513,7 +513,6 @@ def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _
         fragments_per_chromosome: list = [len((positions_dict[chr]['fragment_positions'])) for chr in positions_dict if chr != 'metadata']
         total_fragment_count: int = sum(fragments_per_chromosome)
         return [_positions_path.stem, total_fragment_count, *fragments_per_chromosome]
-
 # --------------------------------------------------
 def main() -> None:
     """ Insert docstring here """
