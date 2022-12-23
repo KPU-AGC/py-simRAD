@@ -4,9 +4,8 @@ __description__ =\
 Purpose: Perform double restriction digest on a given genome.
 """
 __author__ = "Erick Samera; Michael Ke"
-__version__ = "4.1.2"
+__version__ = "5.0.0"
 __comments__ = "stable; multi-processing"
-# TODO: is it worth it to add support for triple restriction digest?
 # --------------------------------------------------
 from argparse import (
     Namespace,
@@ -49,6 +48,13 @@ def get_args() -> Namespace:
         type=str,
         default="SbfI;EcoRI;SphI;PstI;MspI;MseI",
         help='enzymes to generate combinations for double-restriction, ex: "EcoRI;BamHI" (default: "SbfI;EcoRI;SphI;PstI;MspI;MseI")')
+    group_rst_enz_parser.add_argument(
+        '--combinations',
+        dest='combinations',
+        metavar='INT',
+        type=int,
+        default=2,
+        help='produce exhaustive combinations of size n, n-1, n-2 ... until single restrictions')
     group_rst_enz_parser.add_argument(
         '--as_is',
         dest='as_is',
@@ -147,7 +153,7 @@ def get_args() -> Namespace:
         type=str,
         choices=['tab', ','],
         default='tab',
-        help="delimiter for printing (use comma to redirect to .csv): ['tab', ','] (default='tab')")
+        help="delimiter for printing (use comma for redirecting to .csv): ['tab', ','] (default='tab')")
     group_export_delimiter.add_argument(
         '--type',
         dest='summary_type',
@@ -155,7 +161,7 @@ def get_args() -> Namespace:
         type=str,
         choices=['genomic_rep', 'fragment_num'],
         default='genomic_rep',
-        help="output type")
+        help="output type: ['genomic_rep', 'fragment_num'] (default='genomic_rep')")
 
     args = parser.parse_args()
 
@@ -173,6 +179,35 @@ def get_args() -> Namespace:
             parser.error('Invalid input path to a genomic fasta (.fna)!')
     return args
 # --------------------------------------------------
+def _generate_restriction_fragments2(_input_seq: SeqRecord, _restriction_batch: Restriction.RestrictionBatch) -> dict:
+        """
+        From a list of cutting positions, do the cutting and generate a list of fragment sizes,
+        but this way is more biologically accurate, technically. This is meant to handle multiple
+        sizes of restrictions batches -- i.e., triple restriction is technically doable.
+
+        Parameters:
+            _input_seq: Seq
+                chromosomal sequence to cut
+            _restriction_batch: RestrictionBatch
+                a set of enzymes to cut it with
+
+        Returns:
+            (dict)
+                list of restriction restriction fragments of given lengths
+        """
+
+        enzymes = [i for i in _restriction_batch]
+
+        intermediate_fragments: dict = {0: [(int(0), _input_seq.upper())]}
+        for i_enzyme, enzyme in enumerate(enzymes):
+            intermediate_fragments[i_enzyme+1] = []
+            for offset, intermediate_fragment in intermediate_fragments[i_enzyme]:
+                for fragment in enzyme.catalyse(intermediate_fragment):
+                    new_offset: int = offset+len(fragment)
+                    intermediate_fragments[i_enzyme+1].append((new_offset, fragment))
+                    offset = new_offset
+
+        return _generate_restriction_fragments_fast(sorted(set([0] + [position for position, fragment in intermediate_fragments[len(enzymes)]] + [len(_input_seq)])))
 def _generate_restriction_fragments(_input_seq: SeqRecord, _restriction_batch: Restriction.RestrictionBatch) -> dict:
         """
         From a list of cutting positions, do the cutting and generate a list of fragment sizes, \
@@ -248,10 +283,10 @@ def _mp_catalysis(args: Namespace) -> None:
     # set list of restriction enzymes to query
     # generate restriction fragment combinations, including singletons
     if not args.as_is:
-        restriction_enzymes_list: list = args.enzymes.split(';')
-        rst_enz_combinations: list = sorted(
-            [enzyme_pair for enzyme_pair in combinations(restriction_enzymes_list, 2)] +\
-            [(enzyme, ) for enzyme in restriction_enzymes_list])
+        restriction_enzymes_list: list = [enzyme.strip() for enzyme in args.enzymes.split(';') if enzyme]
+        rst_enz_combinations: list = []
+        for i in range(args.combinations): rst_enz_combinations += [enzyme_pair for enzyme_pair in combinations(restriction_enzymes_list, i+1)]
+        rst_enz_combinations: list = sorted(rst_enz_combinations)
     # generate a list of restriction fragment (singletons/pairs) for analysis
     else:
         restriction_enzymes_list: list = [tuple(enzyme_pair.split('-')) for enzyme_pair in args.enzymes.split(';')]
@@ -327,7 +362,7 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
                     _slice_positions=slice_positions)
         elif not _use_fast:
             restriction_enzymes = Restriction.RestrictionBatch(list(_enzyme_combination))
-            restriction_fragments_positions = _generate_restriction_fragments(
+            restriction_fragments_positions = _generate_restriction_fragments2(
                 _input_seq=chr.seq,
                 _restriction_batch=restriction_enzymes)
         
@@ -446,16 +481,17 @@ def _mp_print_genomic_representation(args: Namespace) -> None:
 
     with Pool() as pool: 
         genomic_representation_list: list = pool.starmap(_print_genomic_representation, map_args)
-
     total_val: str = ""
     if args.summary_type == "genomic_rep": total_val = 'total repr (%)'
     elif args.summary_type == "fragment_num": total_val = "total number of fragments"
 
     headers: list = ['enzmye', total_val] + chr_list
     print(delimiter.join(headers))
-    for row in sorted([row for row in genomic_representation_list if row[0]], key=lambda x: x[1]):
-        row = [str(item) for item in row]
-        print(delimiter.join(row))
+    try:
+        for row in sorted([row for row in genomic_representation_list if None not in row], key=lambda x: x[1]):
+            row = [str(item) for item in row]
+            print(delimiter.join(row))
+    except IndexError: print(genomic_representation_list) 
     return None
 def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _representation_filter: tuple, _print_type: str) -> list:
     """
@@ -475,7 +511,7 @@ def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _
     """
     positions_dict: dict = pickle.load(open(_positions_path, 'rb'))
 
-    def _genomic_representation():
+    def _genomic_representation() -> list:
         total_genome_length: int = 0
         genome_represented: int = 0
         per_chromosome_rep_list: list = []
@@ -486,10 +522,6 @@ def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _
             chr_length = positions_dict[chr]['fragment_positions'][-1][1]
             chromosome_represented: int = 0
             total_genome_length += chr_length
-        
-            perc_chromosome_represented: float = round(chromosome_represented/chr_length*100, 3)
-            per_chromosome_rep_list.append(perc_chromosome_represented)
-            perc_genome_represented: float = round(genome_represented/total_genome_length*100, 3)
 
             for position in positions_dict[chr]['fragment_positions']:
                 fragment_length = position[1] - position[0]
@@ -510,7 +542,7 @@ def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _
 
         return [_positions_path.stem, perc_genome_represented] + per_chromosome_rep_list
     
-    if _print_type == 'genomic_rep': _genomic_representation()
+    if _print_type == 'genomic_rep': return(_genomic_representation())
     elif _print_type == 'fragment_num':
         fragments_per_chromosome: list = [len((positions_dict[chr]['fragment_positions'])) for chr in positions_dict if chr != 'metadata']
         total_fragment_count: int = sum(fragments_per_chromosome)
