@@ -484,12 +484,14 @@ def _print_genomic_representation(_positions_path: Path, _size_filters: tuple, _
 
         for chr in chromosomes_list:
             chr_length = positions_dict[chr]['fragment_positions'][-1][1]
+            chromosome_represented: int = 0
             total_genome_length += chr_length
         
-        perc_chromosome_represented: float = round(chromosome_represented/chr_length*100, 3)
-        per_chromosome_rep_list.append(perc_chromosome_represented)
-    perc_genome_represented: float = round(genome_represented/total_genome_length*100, 3)
+            perc_chromosome_represented: float = round(chromosome_represented/chr_length*100, 3)
+            per_chromosome_rep_list.append(perc_chromosome_represented)
+            perc_genome_represented: float = round(genome_represented/total_genome_length*100, 3)
 
+            for position in positions_dict[chr]['fragment_positions']:
                 fragment_length = position[1] - position[0]
                 if fragment_length < _size_filters[0]: continue
                 if _size_filters[1]: 
