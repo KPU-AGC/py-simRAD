@@ -4,7 +4,7 @@ __description__ =\
 Purpose: Perform double restriction digest on a given genome.
 """
 __author__ = "Erick Samera; Michael Ke"
-__version__ = "4.1.2"
+__version__ = "5.1.0"
 __comments__ = "stable; multi-processing"
 # --------------------------------------------------
 from argparse import (
@@ -351,7 +351,7 @@ def _mp_catalysis(args: Namespace) -> None:
     if not args.as_is:
         restriction_enzymes_list: list = [enzyme.strip() for enzyme in args.enzymes.split(';') if enzyme]
         rst_enz_combinations: list = []
-        for i in ([int(num) for num in args.combinations.split(';')]): rst_enz_combinations += [enzyme_pair for enzyme_pair in combinations(restriction_enzymes_list, i+1)]
+        for i in ([int(num) for num in args.combinations.split(';')]): rst_enz_combinations += [enzyme_pair for enzyme_pair in combinations(restriction_enzymes_list, i)]
         rst_enz_combinations: list = sorted(rst_enz_combinations)
     # generate a list of restriction fragment (singletons/pairs) for analysis
     else:
@@ -434,7 +434,7 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
                 _input_seq=chr.seq,
                 _restriction_batch=restriction_enzymes)
         
-        fragments_per_chrom[chr.id] = restriction_fragments_positions
+        fragments_per_chrom[chr.description] = restriction_fragments_positions
     # output fragments per chromosome
     pickle.dump(fragments_per_chrom, open(output_file, 'wb'))
     return None
