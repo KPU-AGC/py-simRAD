@@ -1,19 +1,24 @@
 # py-simRAD
-A parallel implementation of simRAD (Lepais & Weir, 2014) in Python using BioPython (Cock et al., 2009) for simulated prediction of loci expected in RADseq.
+A parallel implementation of simRAD (Lepais & Weir, 2014) in Python using BioPython (Cock et al., 2009) for simulated 
+prediction of loci expected in RADseq.
 
 ## Table of contents
 * [Installation](#installation)
 * [Usage](#usage)
   * [1. Catalysis: Generating fragment positions](#1-catalysis-generating-fragment-positions)
-  * [2A. Export FASTA](#2a-export-fasta)
-  * [2B. Export GFF](#2b-export-gff)
-  * [3. Summary genomic representation](#3-summary-genomic-representation)
+  * [2. Export](#2-export-reference-required)
+    * [2A. Export FASTA](#2a-export-fasta)
+    * [2B. Export GFF](#2b-export-gff)
+  * [3. stdout Prints: delimited tables](#3-delimited-enzyme-prints)
+    * [3A. Fragment numbers](#3a-fragment-numbers)
+    * [3B. Summary genomic representation](#3b-summary-genomic-representation)
   * [4. Batched functionality](#4-batched-functionality)
-* [Example](#example)
+* [Planned features](#planned-features)
 * [References](#references)
 
 ## Installation
-The installation is quite easy. The only requirement is BioPython which can be installed using the [BioPython official documentation](https://biopython.org/wiki/Packages).
+The installation is quite easy. The only requirement is BioPython which can be installed using the 
+[BioPython official documentation](https://biopython.org/wiki/Packages).
 They generally recommend using the `pip` package manager:
 ```
 pip install biopython
@@ -26,17 +31,24 @@ conda install -c conda-forge biopython
 
 ## Usage
 ### 1. Catalysis: Generating fragment positions
-Before visualization, exporting, or any other summarization of the restriction fragment data, restriction fragment positions must first be generated. 
+Before visualization, exporting, or any other summarization of the restriction fragment data, restriction fragment 
+positions must first be generated. 
 ```
 python src/py_simRAD.py catalyze \
     "raw-data/Trichoderma_atroviride_genomic.fna" \
     --enzymes "HhaI;HindIII;NotI"
 ```
 
-This will generate a directory containing files (`.pos`) of restriction fragment position data for each enzyme and enzyme pair. These files are meant to be used as input for each of the export or summary options.
+This will generate a directory containing files (`.pos`) of restriction fragment position data for each enzyme and 
+enzyme pair. These files are meant to be used as input for each of the export or summary options.
 
-### 2A. Export FASTA
-After generation of fragment positions, these positions can be further filtered and exported into FASTA format.
+### 2. Export (reference-required)
+The output produced by the python program are just restriction fragment positions per chromosome. For some fancier 
+output related to the reference sequence, there is a special export function that requires an input of a reference 
+sequence.
+
+#### 2A. Export FASTA
+One such type of export is FASTA export. This command will generate a multi-FASTA of fragments ranging from 300-600 bp. 
 ```
 python src/py_simRAD.py export \
     "raw-data/Trichoderma_atroviride_genomic.fna" \
@@ -47,14 +59,16 @@ python src/py_simRAD.py export \
     --type 'fasta'
 ```
 
-The result is a FASTA file containing sequences of restriction fragments from the given restriction combination used on the given genome.
+The result is a FASTA file containing sequences of restriction fragments from the given restriction combination used on 
+the given genome.
 ```
 HEADER FORMAT     >{ID} {DESCRIPTION} {ENZYME_COMBINATION} {POSITIONS}
 EXAMPLE           >CP084935.1 Trichoderma atroviride strain P1 chromosome 1 HhaI-HindIII 0-403
 ```
 
-### 2B. Export GFF
-Again, this command is meant to be performed after generation of fragment positions. These features can be filtered according to fragment lengths before export into GFF format and can be used with IGV.
+#### 2B. Export GFF
+Again, this command is meant to be performed after generation of fragment positions. These features can be filtered 
+according to fragment lengths before export into GFF format and can be used with IGV.
 ```
 python src/py_simRAD.py export \
     "raw-data/Trichoderma_atroviride_genomic.fna" \
@@ -69,13 +83,29 @@ python src/py_simRAD.py export \
 FORMAT            {chromosome}	{py-simRAD version}	restriction_fragment	{start} {end}	.	+	.
 EXAMPLE           CP084935.1	py-simRADv4.1.2	restriction_fragment	0	403	.	+	.
 ```
-### 3. Summary genomic representation
-Use this command to print out a tab-delimited report of genomic representation.
+
+### 3. Delimited Enzyme Prints
+These outputs do not require an input of a reference sequence and print out directly to the console.
+
+#### 3A. Fragment numbers
+Use this command to print out a tab-delimited report of number of fragments, especially from a given range of fragment 
+sizes.
 ```
 python src/py_simRAD.py summary \
     "raw-data/.Trichoderma_atroviride_genomic/HhaI-HindIII.pos" \
     --min 300 \
     --max 600 \
+```
+
+#### 3B. Summary genomic representation
+Use this command to print out a tab-delimited report of percent genomic representation, especially from a given range of
+fragment sizes.
+```
+python src/py_simRAD.py summary \
+    "raw-data/.Trichoderma_atroviride_genomic/HhaI-HindIII.pos" \
+    --min 300 \
+    --max 600 \
+    --type genomic_rep
 ```
 
 ```
@@ -83,13 +113,15 @@ enzmye  total repr (%)  CP084935.1      CP084936.1      CP084937.1      CP084938
 HhaI-HindIII    37.26   37.367  36.282  36.528  36.439  39.51   37.94   37.962
 ```
 
-The default behaviour is to print to console with human-readable tab delimiting, but this behaviour may be changed. As delimited output, the console printout of this function can be easily redirected to a file:
+The default behaviour is to print to console with human-readable tab delimiting, but this behaviour may be changed. 
+As delimited output, the console printout of this function can be easily redirected to a file:
 ```
 python src/py_simRAD.py summary \
     "raw-data/.Trichoderma_atroviride_genomic/HhaI-HindIII.pos" \
     --min 300 \
     --max 600 \
     --delimiter ',' \
+    --type genomic_rep \
     > target_file.csv
 ```
 
@@ -97,7 +129,8 @@ python src/py_simRAD.py summary \
 Each of the export and summary functions have been written so that wildcard (`*`) file input is allowed.
 
 #### Summary genomic representation
-The following program takes an input of every restriction enzyme combination generated (`*`) and filters printout according to fragment size and percent genomic representation.
+The following program takes an input of every restriction enzyme combination generated (`*`) and filters printout 
+according to fragment size and percent genomic representation.
 ```
 python src/py_simRAD.py summary \
     "raw-data/.Trichoderma_atroviride_genomic/*" \
@@ -109,7 +142,9 @@ python src/py_simRAD.py summary \
     > target_file.csv
 ```
 
-## Example
+## Planned features
+- [ ] Maybe make it possible to pipe generated fasta file from generate_sequence.py
+- [ ] Iterative sequence generation and creation similar to the simRAD paper
 
 
 ## References
