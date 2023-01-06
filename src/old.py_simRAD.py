@@ -16,7 +16,7 @@ from pathlib import Path
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Restriction import Restriction
-from itertools import combinations
+from itertools import combinations, product
 from multiprocessing import Pool
 import pickle
 # --------------------------------------------------
@@ -61,7 +61,7 @@ def get_args() -> Namespace:
         default="2",
         help='produce combinations of size n (default=2)')
     group_rst_enz_parser.add_argument(
-        '--as_is',
+        '--as-is',
         dest='as_is',
         action='store_true',
         help='use enzymes list as is (double-restrictions allowed); ex: "EcoRI;BamHI;EcoRI-BamHI" (default=False)')
@@ -106,6 +106,13 @@ def get_args() -> Namespace:
         type=int,
         default=None,
         help="max fragment size for filtering (default=None)")
+    parser_export.add_argument(
+        '--select-adapt',
+        dest='select_adapt',
+        metavar='str',
+        type=str,
+        default="AB;BA",
+        help="fragment ends for adapter selection (ex: EcoRI + BamHI ends = 'AB;BA') (default='AB;BA')")
     group_export_options = parser_export.add_argument_group(title='export options')
     group_export_options.add_argument(
         '--type',
@@ -123,7 +130,8 @@ def get_args() -> Namespace:
         type=Path,
         nargs='+',
         help="path of input positions files for output")
-    parser_genome_rep.add_argument(
+    group_filters = parser_genome_rep.add_argument_group(title='filtering')
+    group_filters.add_argument(
         '-m',
         '--min',
         dest='size_min',
@@ -131,7 +139,7 @@ def get_args() -> Namespace:
         type=int,
         default=0,
         help="min fragment size (bp) for filtering (default=0)")
-    parser_genome_rep.add_argument(
+    group_filters.add_argument(
         '-M',
         '--max',
         dest='size_max',
@@ -139,7 +147,7 @@ def get_args() -> Namespace:
         type=int,
         default=None,
         help="max fragment size (bp) for filtering (default=None)")
-    parser_genome_rep.add_argument(
+    group_filters.add_argument(
         '-r',
         '--min_rep',
         dest='rep_min',
@@ -147,7 +155,7 @@ def get_args() -> Namespace:
         type=int,
         default=0,
         help="min representation (%%) for filtering (default=0)")
-    parser_genome_rep.add_argument(
+    group_filters.add_argument(
         '-R',
         '--max_rep',
         dest='rep_max',
@@ -155,6 +163,21 @@ def get_args() -> Namespace:
         type=int,
         default=None,
         help="max representation (%%) for filtering (default=None)")
+    group_filters.add_argument(
+        '--select-adapt',
+        dest='select_adapt',
+        metavar='str',
+        type=str,
+        default="AB;BA",
+        help="fragment ends for adapter selection (ex: EcoRI + BamHI ends = 'AB;BA') (default='AB;BA')")
+    group_filters.add_argument(
+        '--exclude',
+        dest='exclude',
+        metavar='str',
+        type=str,
+        default="",
+        help="fragments cut by this list are excluded (ex: in a restriction with EcoRI+MseI, excluding MseI, the following are exluded 'MseI-EcoRI;EcoRI-MseI;MseI-MseI') (default='')")
+
     group_adjusts = parser_genome_rep.add_argument_group(title='adjustments')
     group_adjusts.add_argument(
         '-p',
@@ -162,7 +185,7 @@ def get_args() -> Namespace:
         dest='ploidy',
         metavar='N',
         type=int,
-        default=2,
+        default=1,
         help="ploidy to make output slightly more realistic (default=2)")
 
     group_export_delimiter = parser_genome_rep.add_argument_group(title='format options')
@@ -221,12 +244,27 @@ def _generate_restriction_fragments3(_input_seq: SeqRecord, _restriction_batch: 
     enzymes = [i for i in _restriction_batch]
 
     intermediate_fragments: list = [_input_seq.upper()]
+    intermediate_enzymes: list = [("None", "None")]
     for i_enzyme, enzyme in enumerate(enzymes):
-        intermediate_results = []
-        for intermediate_fragment in intermediate_fragments:
+        intermediate_fragment_results = []
+        intermediate_enzyme_results = []
+        for i_int_frag, intermediate_fragment in enumerate(intermediate_fragments):
             catalysis_results = enzyme.catalyse(intermediate_fragment)
-            intermediate_results += catalysis_results
-        intermediate_fragments = intermediate_results
+            
+
+            intermediate_enzyme_tags = []
+            for i_enzyme_frag, _ in enumerate(catalysis_results):
+                left_enzyme = str(enzyme)
+                right_enzyme = str(enzyme)
+                
+                if i_enzyme_frag == 0: left_enzyme = intermediate_enzymes[i_int_frag][0]
+                if i_enzyme_frag == len(catalysis_results)-1: right_enzyme = intermediate_enzymes[i_int_frag][1]
+                intermediate_enzyme_tags.append((left_enzyme, right_enzyme))
+            
+            intermediate_enzyme_results += intermediate_enzyme_tags
+            intermediate_fragment_results += catalysis_results
+        intermediate_fragments = intermediate_fragment_results
+        intermediate_enzymes = intermediate_enzyme_results
     
     adjusted_fragment_positions = []
     fragment_lengths = [0] + [len(fragment) for fragment in intermediate_fragments]
@@ -237,89 +275,8 @@ def _generate_restriction_fragments3(_input_seq: SeqRecord, _restriction_batch: 
         adjusted_fragment_positions.append((previous_value, previous_value + fragment_lengths[i]))
         i += 1
     adjusted_fragment_positions.pop(0)
-    return _generate_restriction_fragments_fast(
-        sorted(set(
-            [adjusted_fragment_positions[0][0]]
-          + [pos[0] for pos in adjusted_fragment_positions]
-          + [adjusted_fragment_positions[-1][1]]))
-        )
-def _generate_restriction_fragments2(_input_seq: SeqRecord, _restriction_batch: Restriction.RestrictionBatch) -> dict:
-        """
-        From a list of cutting positions, do the cutting and generate a list of fragment sizes,
-        but this way is more biologically accurate, technically. This is meant to handle multiple
-        sizes of restrictions batches -- i.e., triple restriction is technically doable.
 
-        Parameters:
-            _input_seq: Seq
-                chromosomal sequence to cut
-            _restriction_batch: RestrictionBatch
-                a set of enzymes to cut it with
-
-        Returns:
-            (dict)
-                list of restriction restriction fragments of given lengths
-        """
-
-        enzymes = [i for i in _restriction_batch]
-
-        intermediate_fragments: dict = {0: [(0, _input_seq.upper())]}
-        for i_enzyme, enzyme in enumerate(enzymes):
-            intermediate_fragments[i_enzyme+1] = []
-            for offset, intermediate_fragment in intermediate_fragments[i_enzyme]:
-                catalysis_results = enzyme.catalyse(intermediate_fragment)
-                
-                for fragment in catalysis_results:
-                    new_offset: int = offset+len(fragment) if len(catalysis_results) > 1 else offset
-                    intermediate_fragments[i_enzyme+1].append((new_offset, fragment))
-                    
-                    offset = new_offset
-        return _generate_restriction_fragments_fast(sorted(set([0] + [position for position, fragment in intermediate_fragments[len(enzymes)]] + [len(_input_seq)])))
-def _generate_restriction_fragments(_input_seq: SeqRecord, _restriction_batch: Restriction.RestrictionBatch) -> dict:
-        """
-        From a list of cutting positions, do the cutting and generate a list of fragment sizes, \
-        but this way is more biologically accurate, technically. It cuts with the first enzyme, \
-        then cuts again with the second enzyme (if applicable).
-
-        Parameters:
-            _input_seq: Seq
-                chromosomal sequence to cut
-            _restriction_batch: RestrictionBatch
-                a set of enzymes to cut it with
-
-        Returns:
-            (dict)
-                list of restriction restriction fragments of given lengths
-        """
-
-        enzymes = [i for i in _restriction_batch]
-        first_restriction = enzymes[0]
-        second_restriction = enzymes[1] if len(enzymes)>1 else None
-
-        # generate restriction fragments using the first enzyme,
-        first_pass = first_restriction.catalyse(_input_seq)
-
-        total_positions = []
-        first_pass_offsets: list = [0]
-        for fragment in first_pass:
-            first_pass_offsets.append(first_pass_offsets[-1] + len(fragment))
-        
-        if second_restriction:
-            for i, fragment in enumerate(first_pass):
-                first_pass_offset = first_pass_offsets[i]
-                second_restriction_results = second_restriction.catalyse(fragment)
-
-                second_pass_offsets: list = [first_pass_offset]
-                for second_fragment in second_restriction_results:
-                    second_pass_offsets.append(second_pass_offsets[-1] + len(second_fragment))
-                second_pass_offsets.pop()
-                total_positions += second_pass_offsets
-            total_positions.append(len(_input_seq))
-
-        else:
-            first_pass_offsets.append(len(_input_seq))
-            total_positions = first_pass_offsets
-
-        return _generate_restriction_fragments_fast(sorted(set(total_positions)))
+    return {'fragment_positions': adjusted_fragment_positions, 'enzyme_end_positions': intermediate_enzymes}
 def _generate_restriction_fragments_fast(_slice_positions: list) -> dict:
         """
         From a list of cutting positions, do the cutting and generate a list of fragment sizes.
@@ -434,7 +391,7 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
                 _input_seq=chr.seq,
                 _restriction_batch=restriction_enzymes)
         
-        fragments_per_chrom[chr.description] = restriction_fragments_positions
+        fragments_per_chrom[chr.id] = restriction_fragments_positions
     # output fragments per chromosome
     pickle.dump(fragments_per_chrom, open(output_file, 'wb'))
     return None
@@ -497,11 +454,12 @@ def _mp_export_gff(args: Namespace) -> None:
         [(args.input_path)]*map_offset,
         args.positions_paths,
         [(args.output_path)]*map_offset,
-        [(args.size_min, args.size_max)]*map_offset
+        [(args.size_min, args.size_max)]*map_offset,
+        [(args.select_adapt)]*map_offset,
         ))
     with Pool() as pool: pool.starmap(_export_gff, map_args)
     return None
-def _export_gff(_input_path: Path, _positions_path: Path, _output_path: Path, _size_filter: tuple) -> None:
+def _export_gff(_input_path: Path, _positions_path: Path, _output_path: Path, _size_filter: tuple, _select_adapt_str: str) -> None:
     """
     Function outputs a general feature format (.gff) file to describe the fragments generated from a given genome.
 
@@ -515,6 +473,9 @@ def _export_gff(_input_path: Path, _positions_path: Path, _output_path: Path, _s
         (None)
     """
 
+    _select_adapt_allowed = _select_adapt_str.split(';')
+    enzyme_to_letter_conversion = {enzyme: letter for enzyme, letter in zip(_positions_path.stem.split('-'), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')}
+
     with open(_output_path.joinpath(f'{_positions_path.stem}.gff'), mode='w', encoding='utf-8') as output_gff:
         positions_dict: dict = pickle.load(open(_positions_path, 'rb'))
 
@@ -522,12 +483,15 @@ def _export_gff(_input_path: Path, _positions_path: Path, _output_path: Path, _s
         for chr in SeqIO.parse(_input_path, 'fasta'):
             if 'mitochondrion' in chr.description: continue
             
-            for position in positions_dict[chr.id]['fragment_positions']:
-                fragment_length = position[1] - position[0]
+            for fragment_position, enzyme_ends in zip(positions_dict[chr.id]['fragment_positions'], positions_dict[chr.id]['enzyme_end_positions']):
+                fragment_length = fragment_position[1] - fragment_position[0]
                 if fragment_length < _size_filter[0]: continue
                 if _size_filter[1]: 
                     if fragment_length > _size_filter[1]: continue
-                gff_str = f"{chr.id}\tpy-simRADv{__version__}\trestriction_fragment\t{position[0]}\t{position[1]}\t.\t+\t.\n"
+                if 'None' in enzyme_ends: continue
+                processed_ends = ''.join([enzyme_to_letter_conversion[i] for i in enzyme_ends])
+                if processed_ends not in _select_adapt_allowed: continue
+                gff_str = f"{chr.id}\tpy-simRADv{__version__}\trestriction_fragment\t{fragment_position[0]}\t{fragment_position[1]}\t.\t+\t0\t.\n"
                 output_gff.write(gff_str)
     return None
 # --------------------------------------------------
@@ -546,6 +510,7 @@ def _mp_print_genomic_representation(args: Namespace) -> None:
         [(args.size_min, args.size_max)]*map_offset,
         [(args.rep_min, args.rep_max)]*map_offset,
         [args.summary_type]*map_offset,
+        [(args.select_adapt)]*map_offset,
         ))
 
     with Pool() as pool: 
@@ -561,7 +526,7 @@ def _mp_print_genomic_representation(args: Namespace) -> None:
         row = [str(item) for item in row]
         print(delimiter.join(row))
     return None
-def _print_genomic_representation(_positions_path: Path, _ploidy:int, _size_filters: tuple, _representation_filter: tuple, _print_type: str) -> list:
+def _print_genomic_representation(_positions_path: Path, _ploidy:int, _size_filters: tuple, _representation_filter: tuple, _print_type: str, _select_adapt_str: str) -> list:
     """
     Print genomic representation (%) to the console, given whatever filtering options.
 
@@ -579,6 +544,9 @@ def _print_genomic_representation(_positions_path: Path, _ploidy:int, _size_filt
     """
     positions_dict: dict = pickle.load(open(_positions_path, 'rb'))
 
+    _select_adapt_allowed = _select_adapt_str.split(';')
+    enzyme_to_letter_conversion = {enzyme: letter for enzyme, letter in zip(_positions_path.stem.split('-'), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')}
+    
     def _genomic_representation() -> list:
         total_genome_length: int = 0
         genome_represented: int = 0
@@ -591,11 +559,14 @@ def _print_genomic_representation(_positions_path: Path, _ploidy:int, _size_filt
             total_genome_length += chr_length
         
             chromosome_represented: int = 0
-            for position in positions_dict[chr]['fragment_positions']:
-                fragment_length = position[1] - position[0]
+            for fragment_position, enzyme_ends in zip(positions_dict[chr]['fragment_positions'], positions_dict[chr]['enzyme_end_positions']):
+                fragment_length = fragment_position[1] - fragment_position[0]
                 if fragment_length < _size_filters[0]: continue
                 if _size_filters[1]: 
                     if fragment_length > _size_filters[1]: continue
+                if 'None' in enzyme_ends: continue
+                processed_ends = ''.join([enzyme_to_letter_conversion[i] for i in enzyme_ends])
+                if processed_ends not in _select_adapt_allowed: continue
                 chromosome_represented += fragment_length
 
             genome_represented += chromosome_represented
@@ -615,11 +586,14 @@ def _print_genomic_representation(_positions_path: Path, _ploidy:int, _size_filt
         for chr in positions_dict:
             if chr == 'metadata': continue
             fragments_passing_filter = 0
-            for position in positions_dict[chr]['fragment_positions']:
-                fragment_length = position[1] - position[0]
+            for fragment_position, enzyme_ends in zip(positions_dict[chr]['fragment_positions'], positions_dict[chr]['enzyme_end_positions']):
+                fragment_length = fragment_position[1] - fragment_position[0]
                 if fragment_length < _size_filters[0]: continue
                 if _size_filters[1]: 
                     if fragment_length > _size_filters[1]: continue
+                if 'None' in enzyme_ends: continue
+                processed_ends = ''.join([enzyme_to_letter_conversion[i] for i in enzyme_ends])
+                if processed_ends not in _select_adapt_allowed: continue
                 fragments_passing_filter += 1
             fragments_per_chromosome.append(int(fragments_passing_filter*_ploidy))
         total_fragment_count: int = sum(fragments_per_chromosome)
