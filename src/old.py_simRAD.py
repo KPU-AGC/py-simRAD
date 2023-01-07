@@ -325,6 +325,7 @@ def _mp_catalysis(args: Namespace) -> None:
         ))
     with Pool() as pool:
         pool.starmap(_catalysis, map_args)
+
     return None
 def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path, _use_fast: bool, _force_new: bool) -> None:
     """
@@ -605,6 +606,8 @@ def _print_genomic_representation(_positions_path: Path, _ploidy:int, _size_filt
 # --------------------------------------------------
 def main() -> None:
     """ Insert docstring here """
+
+    import timeit
 
     args = get_args()
 
