@@ -13,10 +13,10 @@ from argparse import (
     RawTextHelpFormatter)
 from pathlib import Path
 # --------------------------------------------------
-import _export
+import _restriction_enzymes
+from _restriction_enzymes import _NEB_enzymes
 import _catalysis
 import _print_summary
-from Bio.Restriction import Restriction
 # --------------------------------------------------
 def get_args() -> Namespace:
     """ Get command-line arguments """
@@ -36,12 +36,12 @@ def get_args() -> Namespace:
     # --------------------------------------------------
     parser_catalyze = exploratory_subparser.add_parser('catalyze',
         help='generate restriction fragment positions using restriction enzyme combinations (RUN FIRST)')
-    parser_catalyze.add_argument('input_path',
+
+    required_parser = parser_catalyze.add_argument_group('REQUIRED')
+    required_parser.add_argument('input',
+        metavar='<FASTA PATH>',
         type=Path,
         help="path of input genomic file (.fna)")
-    parser_catalyze.add_argument('--concat', dest='concat',
-        action='store_true',
-        help="concatenate sequences together in fasta (DEFUNCT)")
     
     group_rst_enz_parser = parser_catalyze.add_argument_group('restriction enzyme options')
     group_rst_enz_parser.add_argument('--enzymes', dest='enzymes',
@@ -49,58 +49,20 @@ def get_args() -> Namespace:
         type=str,
         default="SbfI;EcoRI;SphI;PstI;MspI;MseI",
         help='enzymes to generate combinations for double-restriction, ex: "EcoRI;BamHI" (default="SbfI;EcoRI;SphI;PstI;MspI;MseI")')
-    group_rst_enz_parser.add_argument('--combinations', dest='combinations',
+    group_combinations_as_is = group_rst_enz_parser.add_mutually_exclusive_group()
+    group_combinations_as_is.add_argument('--combinations', dest='combinations',
         metavar='INT',
         type=str,
-        default="2",
         help='produce combinations of size n (default=2)')
-    group_rst_enz_parser.add_argument('--as-is', dest='as_is',
+    group_combinations_as_is.add_argument('--as-is', dest='as_is',
         action='store_true',
-        help='use enzymes list as is (double-restrictions allowed); ex: "EcoRI;BamHI;EcoRI-BamHI" (default=False)')
+        help='use enzymes list as is (double-restrictions allowed); ex: "EcoRI;BamHI;EcoRI-BamHI" (default=False) (overrides --combinations)')
     group_rst_enz_parser.add_argument('--fast', dest='use_fast',
         action='store_true',
-        help="use the 'fast' algorithm (but slightly inaccurate; not that much faster) (default=False)")
+        help="use the 'fast' algorithm (but slightly inaccurate) (default=False)")
     group_rst_enz_parser.add_argument('--force', dest='force_new',
         action='store_true',
         help="force program to generate new positions even if previously generated positions exist (default=False)")
-    # --------------------------------------------------
-    parser_export = exploratory_subparser.add_parser('export',
-        help='given a set of restriction fragment positions, export them into other data types')
-    parser_export.add_argument('input_path',
-        type=Path,
-        help="path of input genomic file (.fna)")
-    parser_export.add_argument('output_path',
-        type=Path,
-        help="path of directory to output the files (see --type argument)")
-    parser_export.add_argument('positions_paths',
-        type=Path,
-        nargs='+',
-        help="path of input positions files for output (.pos)")
-    
-    parser_export.add_argument('-m', '--min', dest='size_min',
-        metavar='INT',
-        type=int,
-        default=0,
-        help="min fragment size for filtering (default=None)")
-    parser_export.add_argument('-M', '--max', dest='size_max',
-        metavar='INT',
-        type=int,
-        default=10_000,
-        help="max fragment size for filtering (default=None)")
-    parser_export.add_argument('--select-adapt', dest='select_adapt',
-        metavar='str',
-        type=str,
-        default="AB;BA",
-        help="fragment ends for adapter selection (ex: EcoRI + BamHI ends = 'AB;BA') (default='AB;BA')")
-    
-    group_export_options = parser_export.add_argument_group(title='export options')
-    group_export_options.add_argument('--type', dest='export_type',
-        metavar='STR',
-        type=str,
-        choices=['fasta', 'gff'],
-        default='fasta',
-        required=True,
-        help="export types: ['fasta', 'gff'] (default='fasta')")
     # --------------------------------------------------
     parser_genome_rep = exploratory_subparser.add_parser('summary',
         help='given a set of restriction fragment positions, print out percent genomic representation')
@@ -139,7 +101,8 @@ def get_args() -> Namespace:
         metavar='str',
         type=str,
         default="",
-        help="fragments cut by this list are excluded (ex: in a restriction with EcoRI+MseI, excluding MseI, the following are exluded 'MseI-EcoRI;EcoRI-MseI;MseI-MseI') (default='')")
+        help="fragments cut by this list are excluded (ex: in a restriction with EcoRI+MseI, excluding MseI, the \
+            following are exluded 'MseI-EcoRI;EcoRI-MseI;MseI-MseI') (default='')")
 
     group_adjusts = parser_genome_rep.add_argument_group(title='adjustments')
     group_adjusts.add_argument( '-p', '--ploidy', dest='ploidy',
@@ -165,36 +128,36 @@ def get_args() -> Namespace:
         action='store_false',
         help="only print totals, not chromosomal breakdown")
     # --------------------------------------------------
-    args = parser.parse_args()
 
-    # parser errors and processing
-    # --------------------------------------------------
+
+
+    args = parser.parse_args()
     if args.options=='catalyze':
+        # --------------------------------------------------
+        extra_warning = ''
+        allowed_enzymes = [enzyme.name for _, enzyme in _NEB_enzymes.items()]
         if not args.as_is:
-            invalid_enzymes: list = [enzyme for enzyme in args.enzymes.split(';') if enzyme not in Restriction.AllEnzymes.elements()]
+            invalid_enzymes: list = [enzyme for enzyme in args.enzymes.split(';') if enzyme not in allowed_enzymes]
+            if any([True for enzyme in args.enzymes.split(';') if '-' in enzyme]): extra_warning = '. Do you mean to use --as-is?'
         else:
             flattened_enzymes: list = sum([enzyme.split('-') for enzyme in args.enzymes.split(';')], [])
-            invalid_enzymes: list = [enzyme for enzyme in flattened_enzymes if enzyme not in Restriction.AllEnzymes.elements()]
+            invalid_enzymes: list = [enzyme for enzyme in flattened_enzymes if enzyme not in allowed_enzymes]
 
-        if invalid_enzymes: parser.error(f"Couldn't process the following enzymes: {' '.join(invalid_enzymes)}")
-        if not args.input_path.is_file():
-            parser.error('Invalid input path to a genomic fasta (.fna)!')
-        invalid_combinations: list = [num for num in args.combinations.split(';') if num not in "0123456789"]
-        if invalid_combinations: parser.error(f"Couldn't process the following enzymes: {' '.join(invalid_enzymes)}")
+        
+        if invalid_enzymes: parser.error(f"Couldn't process the following enzymes: {' '.join(invalid_enzymes)} {extra_warning}")
+        # --------------------------------------------------
+        if args.combinations: args.as_is = False
+        if not args.as_is: args.combinations = "2"
     return args
 # --------------------------------------------------
 def main() -> None:
     """ Insert docstring here """
 
     args = get_args()
-
+    
     if args.options=='catalyze': _catalysis._mp_catalysis(args)
-    if args.options=='export':
-        if args.export_type=='fasta': _export._mp_export_fasta(args)
-        if args.export_type=='gff': _export._mp_export_gff(args)
-    if args.options=='summary': _print_summary._mp_print_genomic_representation(args)
+    if args.options=='summary': _print_summary._mp_print_summary(args)
 
-    return None
 # --------------------------------------------------
-if __name__ == '__main__':
+if __name__=="__main__":
     main()

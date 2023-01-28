@@ -12,14 +12,12 @@ from argparse import (
     RawTextHelpFormatter)
 from pathlib import Path
 # --------------------------------------------------
-from Bio import SeqIO
-from Bio.SeqRecord import SeqRecord
-from Bio.Restriction import Restriction
+from _restriction_enzymes import _NEB_enzymes
 from itertools import combinations
 from multiprocessing import Pool
 import pickle
 # --------------------------------------------------
-def _generate_restriction_fragments3(_input_seq: SeqRecord, _restriction_batch: Restriction.RestrictionBatch) -> dict:
+def _generate_restriction_fragments(_input_seq: str, _enzymes_list: list) -> dict:
     """
     From a list of cutting positions, do the cutting and generate a list of fragment sizes,
     but this way is more biologically accurate, technically. This is meant to handle multiple
@@ -35,22 +33,18 @@ def _generate_restriction_fragments3(_input_seq: SeqRecord, _restriction_batch: 
         (dict)
             list of restriction restriction fragments of given lengths
     """
-
-    enzymes = [i for i in _restriction_batch]
-
-    intermediate_fragments: list = [_input_seq.upper()]
+    intermediate_fragments: list = [_input_seq]
     intermediate_enzymes: list = [("None", "None")]
-    for i_enzyme, enzyme in enumerate(enzymes):
+    for i_enzyme, enzyme in enumerate(_enzymes_list):
         intermediate_fragment_results = []
         intermediate_enzyme_results = []
         for i_int_frag, intermediate_fragment in enumerate(intermediate_fragments):
-            catalysis_results = enzyme.catalyse(intermediate_fragment)
-            
+            catalysis_results = _NEB_enzymes[enzyme].catalyze(intermediate_fragment)
 
             intermediate_enzyme_tags = []
             for i_enzyme_frag, _ in enumerate(catalysis_results):
-                left_enzyme = str(enzyme)
-                right_enzyme = str(enzyme)
+                left_enzyme = str(_NEB_enzymes[enzyme].name)
+                right_enzyme = str(_NEB_enzymes[enzyme].name)
                 
                 if i_enzyme_frag == 0: left_enzyme = intermediate_enzymes[i_int_frag][0]
                 if i_enzyme_frag == len(catalysis_results)-1: right_enzyme = intermediate_enzymes[i_int_frag][1]
@@ -71,31 +65,57 @@ def _generate_restriction_fragments3(_input_seq: SeqRecord, _restriction_batch: 
         i += 1
     adjusted_fragment_positions.pop(0)
 
-    return {'fragment_positions': adjusted_fragment_positions, 'enzyme_end_positions': intermediate_enzymes}
-def _generate_restriction_fragments_fast(_slice_positions: list) -> dict:
-        """
-        From a list of cutting positions, do the cutting and generate a list of fragment sizes.
+    return {'fragment_positions': [
+            (start-1 if i > 1 else start, end-1 if i < len(adjusted_fragment_positions)-1 else end) 
+            for i, (start, end) in enumerate(adjusted_fragment_positions)], 'enzyme_end_positions': intermediate_enzymes}
+def _generate_restriction_fragments_fast(_input_seq: str, _enzymes_list: list,) -> dict:
+    """
+    From a list of cutting positions, do the cutting and generate a list of fragment sizes.
 
-        Parameters:
-            _slice_positions: list
-                list of slice positions from the restriction enzymes
+    Parameters:
+        _slice_positions: list
+            list of slice positions from the restriction enzymes
 
-        Returns:
-            (list)
-                list of restriction restriction fragments of given lengths
-        """
-        fragment_positions: list = []
-        len_slice_positions: int = len(_slice_positions)-1
-        for i_pos, _ in enumerate(_slice_positions):
-            if i_pos < len_slice_positions:
-                start_pos = _slice_positions[i_pos]
-                end_pos = _slice_positions[i_pos + 1]
-                fragment_positions.append((start_pos, end_pos))
-        return {'fragment_positions': fragment_positions}
+    Returns:
+        (list)
+            list of restriction restriction fragments of given lengths
+    """
+    total_fragment_positions: list = []
+    for enzyme in _enzymes_list:
+        current_catalysis = _NEB_enzymes[enzyme].fast_catalyze(_input_seq)
+        for start, end in current_catalysis:
+            total_fragment_positions.append((start, enzyme))
+    total_fragment_positions += [(0, 'None'), (len(_input_seq), 'None')]
+    
+    fragment_positions = [item[0] for item in sorted(total_fragment_positions, key=lambda x: x[0])]
+    enzyme_positions = [item[1] for item in sorted(total_fragment_positions, key=lambda x: x[0])]
+
+    adjusted_fragment_positions = []
+    adjusted_enzyme_positions = []
+    for i, _ in enumerate(zip(fragment_positions, enzyme_positions)):
+        if i < len(fragment_positions)-1:
+            adjusted_fragment_positions.append( (fragment_positions[i], fragment_positions[i+1]) )
+            adjusted_enzyme_positions.append( (enzyme_positions[i], enzyme_positions[i+1]) )
+
+    return {'fragment_positions': [
+            (start-1 if i > 1 else start, end-1 if i < len(adjusted_fragment_positions)-1 else end) 
+            for i, (start, end) in enumerate(adjusted_fragment_positions)], 'enzyme_end_positions': adjusted_enzyme_positions}
+def _parse_fasta(_input_path: Path) -> dict:
+    """ Generate a dictionary of sequences from FASTA input """
+    fasta_dict: dict = {}
+    with open(_input_path) as fasta_file:
+        fasta_files = fasta_file.read().split('>')
+        for entry in fasta_files:
+            if entry.strip():
+                header = entry.split('\n')[0]
+                sequence = ''.join(entry.split('\n')[1:])
+                id = header.split(' ')[0]
+                fasta_dict[id] = sequence
+    return fasta_dict
 def _mp_catalysis(args: Namespace) -> None:
     """ Multiprocess wrapper for the _catalysis function. Also generates a list of enzymes for processing. """
 
-    output_dir = args.input_path.parent.joinpath('.'+str(args.input_path.stem).replace(' ', '_'))
+    output_dir = args.input.parent.joinpath('.'+str(args.input.stem).replace(' ', '_'))
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # set list of restriction enzymes to query
@@ -112,7 +132,7 @@ def _mp_catalysis(args: Namespace) -> None:
 
     map_offset = len(rst_enz_combinations)
     map_args = tuple(zip(
-        [args.input_path]*map_offset,
+        [args.input]*map_offset,
         rst_enz_combinations,
         [output_dir]*map_offset,
         [args.use_fast]*map_offset,
@@ -120,7 +140,6 @@ def _mp_catalysis(args: Namespace) -> None:
         ))
     with Pool() as pool:
         pool.starmap(_catalysis, map_args)
-
     return None
 def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path, _use_fast: bool, _force_new: bool) -> None:
     """
@@ -164,30 +183,23 @@ def _catalysis(_input_path: Path, _enzyme_combination: tuple, _output_dir: Path,
     fragments_per_chrom: dict = {}
     fragments_per_chrom.update(_metadata)
 
-    for chr in SeqIO.parse(_input_path, 'fasta'):
-        # ignore the mitochrondrial genome, only do nuclear genome
-        if 'mitochondrion' in chr.description: continue
-        
-        restriction_fragments_positions: dict = {}
-        if _use_fast:
-            # get all unique slice positions
-            restriction_batch = Restriction.RestrictionBatch(list(_enzyme_combination))
-            restriction_result = restriction_batch.search(chr.seq.upper())
-            # using (end - beginning), add 0 position so that first fragment is the length from the start to that position
-            # also add end position -- the entire length of the chromosome
-            # and remove duplicate positions from isoschizomers or similar cut sites
-            slice_positions: list = sorted(set([0] + [slice_pos for _, enzyme_slice_list in restriction_result.items() for slice_pos in enzyme_slice_list] + [len(chr.seq)]))
+    fasta_dict: dict = _parse_fasta(_input_path)
 
-            # generate "fragments" by cutting between slice positions
+    for chr_id, chr_seq in fasta_dict.items():
+        restriction_fragments_positions: dict = {}
+
+        if not _use_fast:
+            restriction_enzymes = list(_enzyme_combination)
+            restriction_fragments_positions = _generate_restriction_fragments(
+                _input_seq=chr_seq,
+                _enzymes_list=restriction_enzymes)
+        elif _use_fast:
+            restriction_enzymes = list(_enzyme_combination)
             restriction_fragments_positions = _generate_restriction_fragments_fast(
-                    _slice_positions=slice_positions)
-        elif not _use_fast:
-            restriction_enzymes = Restriction.RestrictionBatch(list(_enzyme_combination))
-            restriction_fragments_positions = _generate_restriction_fragments3(
-                _input_seq=chr.seq,
-                _restriction_batch=restriction_enzymes)
+                _input_seq=chr_seq,
+                _enzymes_list=restriction_enzymes)
         
-        fragments_per_chrom[chr.id] = restriction_fragments_positions
+        fragments_per_chrom[chr_id] = restriction_fragments_positions
     # output fragments per chromosome
     pickle.dump(fragments_per_chrom, open(output_file, 'wb'))
     return None
